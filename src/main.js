@@ -13,7 +13,8 @@ let neurons = [];
 let histories = [];
 let spikeMarkers = [];
 const MAX_HISTORY = 500;
-const DT = 0.5;
+const DT = 1.0;        // simulation ms advanced per step() (1:1 with real time at STEP_HZ=1000)
+const HALF_DT = DT / 2; // v is integrated in two half-steps for numerical stability
 
 const PATTERNS = {
   regular:   { a: 0.02, b: 0.2,  c: -65, d: 8, color: '#e8788a' },
@@ -61,10 +62,10 @@ function step() {
   for (let i = 0; i < N; i++) {
     const n = neurons[i];
     const I = inputCurrent + (Math.random() - 0.5) * noise * 2;
-    const dv = (0.04 * n.v * n.v + 5 * n.v + 140 - n.u + I);
-    const du = n.a * (n.b * n.v - n.u);
-    n.v += dv * DT;
-    n.u += du * DT;
+    // Integrate v over two half-steps (Izhikevich's recommended scheme) for stability.
+    n.v += HALF_DT * (0.04 * n.v * n.v + 5 * n.v + 140 - n.u + I);
+    n.v += HALF_DT * (0.04 * n.v * n.v + 5 * n.v + 140 - n.u + I);
+    n.u += DT * n.a * (n.b * n.v - n.u);
     n.fired = false;
 
     if (n.v >= 30) {
@@ -88,7 +89,8 @@ function step() {
 function updateStats() {
   document.getElementById('s-spikes').textContent = totalSpikes;
   document.getElementById('s-time').textContent = Math.floor(time);
-  const rate = totalSpikes / (time * DT / 1000 + 0.001);
+  // mean firing rate per neuron (Hz): time is in simulation ms, N neurons
+  const rate = totalSpikes / ((time / 1000) * N + 0.001);
   document.getElementById('s-rate').textContent = Math.min(rate, 999).toFixed(2);
 }
 
@@ -163,10 +165,29 @@ function draw() {
   ctx.stroke();
 }
 
-function loop() {
+// Target step() rate, decoupled from the display refresh rate.
+const STEP_HZ = 1000;
+const STEP_INTERVAL = 1000 / STEP_HZ; // ms between step() calls
+const MAX_STEPS_PER_FRAME = 250;       // safety cap to avoid spiral-of-death
+
+let lastTime = null;
+let accumulator = 0;
+
+function loop(now) {
+  if (lastTime === null) lastTime = now;
+  let elapsed = now - lastTime;
+  lastTime = now;
+
   if (!paused) {
-    for (let i = 0; i < 4; i++) step();
+    accumulator += elapsed;
+    let steps = Math.floor(accumulator / STEP_INTERVAL);
+    if (steps > MAX_STEPS_PER_FRAME) steps = MAX_STEPS_PER_FRAME;
+    accumulator -= steps * STEP_INTERVAL;
+    for (let i = 0; i < steps; i++) step();
+  } else {
+    accumulator = 0;
   }
+
   draw();
   requestAnimationFrame(loop);
 }
@@ -209,4 +230,4 @@ canvas.height = rect.height * window.devicePixelRatio;
 ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
 
 reset();
-loop();
+requestAnimationFrame(loop);
